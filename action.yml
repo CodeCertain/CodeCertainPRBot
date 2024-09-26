@@ -1,0 +1,61 @@
+name: CodeCertain Bot Action
+
+on:
+  issue_comment:
+    types: [created]
+
+jobs:
+  run_bot:
+    if: startsWith(github.event.comment.body, '@CodeCertain Bot')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v2
+        with:
+          node-version: '16'
+
+      - name: Fetch PR code and process comment
+        id: fetch_code
+        run: |
+          # Extract PR number and comment body
+          PR_NUMBER=$(jq -r '.issue.number' "$GITHUB_EVENT_PATH")
+          COMMENT_BODY=$(jq -r '.comment.body' "$GITHUB_EVENT_PATH")
+
+          # Get the file name and line number from the GitHub comment
+          FILE_PATH=$(echo "$COMMENT_BODY" | grep -oP '(?<=@CodeCertain Bot ).*')
+
+          # Get the surrounding lines of code
+          PR_URL="https://api.github.com/repos/${{ github.repository }}/pulls/$PR_NUMBER/files"
+          FILE_CONTENT=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" "$PR_URL" | jq -r ".[] | select(.filename == \"$FILE_PATH\") | .patch")
+
+          # Extract 20 lines (10 before, 10 after the comment line)
+          LINE_NUMBER=$(grep -n "$COMMENT_BODY" <<< "$FILE_CONTENT" | cut -d':' -f1)
+          START_LINE=$((LINE_NUMBER - 10))
+          END_LINE=$((LINE_NUMBER + 10))
+
+          # Ensure start line is not below 1
+          if [ "$START_LINE" -lt 1 ]; then START_LINE=1; fi
+
+          # Get the 20 surrounding lines of code
+          CODE_CONTEXT=$(echo "$FILE_CONTENT" | sed -n "${START_LINE},${END_LINE}p")
+
+          echo "CODE_CONTEXT=$CODE_CONTEXT" >> $GITHUB_ENV
+
+      - name: Send code to API
+        id: send_api
+        run: |
+          API_RESPONSE=$(curl -X POST "https://api.example.com/process" \
+            -H "Content-Type: application/json" \
+            -d "{\"code\": \"$CODE_CONTEXT\"}")
+
+          echo "API_RESPONSE=$API_RESPONSE" >> $GITHUB_ENV
+
+      - name: Reply to the comment
+        run: |
+          PR_COMMENT_URL=$(jq -r '.comment.url' "$GITHUB_EVENT_PATH")
+          curl -X POST "$PR_COMMENT_URL/replies" \
+            -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            -d "{\"body\": \"${{ env.API_RESPONSE }}\"}"
